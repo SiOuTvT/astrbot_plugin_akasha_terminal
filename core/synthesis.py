@@ -213,7 +213,9 @@ class Synthesis:
         synthesis_data = await self.get_synthesis_data()
         return synthesis_data["items"]  # 只返回物品信息部分
 
-    async def show_composite_list(self, event: AiocqhttpMessageEvent, *args) -> str:
+    async def show_composite_list(
+        self, event: AiocqhttpMessageEvent, *args, **kwargs
+    ) -> str:
         """显示合成列表"""
         try:
             user_id = str(event.user_id)
