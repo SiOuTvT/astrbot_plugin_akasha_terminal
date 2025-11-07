@@ -45,10 +45,16 @@ class Synthesis:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._init_synthesis_data()
 
+        # 导入商店系统获取材料名称
+        from .shop import Shop
+
+        self.shop = Shop()  # 初始化商店系统
+
         # 导入用户系统获取金钱
         from .user import User
 
         self.user = User()
+
         # 导入任务系统更新任务进度
         self.task = Task()
 
@@ -171,3 +177,220 @@ class Synthesis:
                 "105": {"materials": {"5": 2, "1": 3}, "success_rate": 30},
             },
         }
+        # 如果文件不存在或数据为空，写入默认数据
+        if not self.synthesis_recipes_path.exists() or not synthesis_default_data.get(
+            "recipes"
+        ):
+            write_json_sync(self.synthesis_recipes_path, self.default_recipes)
+
+        # 初始化用户工坊路径，储存每个用户的工坊数据
+        if not self.user_workshop_path.exists():
+            self.user_workshop_path.mkdir(parents=True, exist_ok=True)
+
+    async def get_synthesis_data(self) -> Dict[str, Any]:
+        """获取合成系统数据，自动处理数据异常"""
+        synthesis_data = await read_json(self.synthesis_recipes_path, {})
+
+        # 检查数据是否正常
+        if not synthesis_data or "recipes" not in synthesis_data:
+            logger.warning("[合成系统] 配方数据异常，尝试初始化默认数据")
+            self._init_synthesis_data()  # 重新初始化数据
+            synthesis_data = await read_json(self.synthesis_recipes_path, {})
+
+        # 再次检查
+        if not synthesis_data or "recipes" not in synthesis_data:
+            raise Exception("合成配方数据异常，无法初始化")
+
+        return synthesis_data
+
+    async def get_synthesis_recipes(self) -> Dict[str, Any]:
+        """获取合成配方列表"""
+        synthesis_data = await self.get_synthesis_data()
+        return synthesis_data["recipes"]  # 只返回配方部分
+
+    async def get_synthesis_items(self) -> Dict[str, Any]:
+        """获取合成物品信息"""
+        synthesis_data = await self.get_synthesis_data()
+        return synthesis_data["items"]  # 只返回物品信息部分
+
+    async def show_composite_list(self, event: AiocqhttpMessageEvent) -> str:
+        """显示合成列表"""
+        try:
+            user_id = str(event.user_id)
+            group_id = (
+                str(event.group_id)
+                if hasattr(event, "group_id") and event.group_id
+                else ""
+            )
+
+            # 收集所有需要的数据
+            recipes = await self.get_synthesis_recipes()  # 配方数据
+            items_info = await self.get_synthesis_items()  # 合成物品信息
+            workshop = await self.get_user_workshop(user_id, group_id)  # 用户工坊状态
+            inventory = await self.get_user_inventory(user_id, group_id)  # 用户材料
+            shop_data = await self.shop.get_shop_items()  # 商店材料名称
+
+            # 添加缺失的分类处理逻辑
+            categories = {}
+            for name, recipe in recipes.items():
+                category = recipe.get("category", "其他")
+                if category not in categories:
+                    categories[category] = []
+                categories[category].append({"name": name, **recipe})
+
+            # 调用_build_template_data方法
+            template_data = self._build_template_data(
+                username=event.sender.nickname,
+                workshop=workshop,
+                categories=categories,
+                shop_data=shop_data,
+                inventory=inventory,
+                items_info=items_info,
+            )
+
+            # 这里应该调用图片渲染或消息格式化
+            return await self._format_composite_list_message(
+                template_data
+            )  # 修改调用方式
+
+        except Exception as e:
+            logger.error(f"显示合成列表失败: {str(e)}")
+            return "❌ 获取合成列表失败"  # 返回字符串,不是字典
+
+    async def _format_composite_list_message(self, template_data: Dict) -> str:
+        """格式化合成列表消息"""
+        # 这里实现您的消息格式化逻辑
+        # 可能是生成图片或文本消息
+        return "合成列表功能"
+
+    def _build_template_data(
+        self,
+        username: str,
+        workshop: Dict,
+        categories: Dict,
+        shop_data: Dict,
+        inventory: Dict,
+        items_info: Dict,
+    ) -> Dict[str, Any]:
+        """构建模板数据（用于图片生成）"""
+        workshop_level = workshop.get("level", 1)
+        workshop_exp = workshop.get("exp", 0)
+
+        template_data = {
+            "username": username,
+            "workshopLevel": workshop_level,
+            "workshopExp": workshop_exp,
+            "expToNext": workshop_level * 100,
+            "successBonus": min(20, (workshop_level - 1) * 5),
+            "recipes": [],
+        }
+
+        # 处理分类配方
+        for category, items in categories.items():
+            category_data = {
+                "category": category,
+                "categoryName": category,
+                "items": [],
+            }
+
+            for item in items:
+                # 处理材料显示
+                materials = []
+                if item.get("materials") and isinstance(item["materials"], dict):
+                    for item_id, count in item["materials"].items():
+                        material_name = (
+                            shop_data.get("items", {}).get(item_id, {}).get("name")
+                            or f"道具{item_id}"
+                        )
+                        materials.append(f"{material_name}x{count}")
+
+                # 先计算稀有度和成功率
+                rarity = items_info.get(item["result_id"], {}).get("rarity", "普通")
+                rarity_emoji = self.get_rarity_emoji(rarity)
+                level_bonus = min(
+                    20, (workshop_level - item.get("workshop_level", 1)) * 5
+                )
+                final_success_rate = min(95, item.get("success_rate", 50) + level_bonus)
+
+                # 然后一次性构建完整的数据对象
+                category_data["items"].append(
+                    {
+                        "name": item.get("name", "未知道具"),
+                        "rarityIcon": rarity_emoji,
+                        "materialsText": ", ".join(materials),
+                        "successRate": item.get("success_rate", 50),
+                        "finalSuccessRate": final_success_rate,
+                        "workshopLevel": item.get("workshop_level", 1),
+                        "description": item.get("description", "暂无描述"),
+                        "canCraft": workshop_level >= item.get("workshop_level", 1),
+                    }
+                )
+
+            template_data["recipes"].append(category_data)
+
+        template_data["inventory"] = [
+            {
+                "name": (
+                    shop_data.get("items", {}).get(item_id, {}).get("name")
+                    or items_info.get(item_id, {}).get("name")  # 使用items_info
+                    or f"道具{item_id}"
+                ),
+                "amount": count,
+                "rarityIcon": self.get_rarity_emoji(
+                    shop_data.get("items", {}).get(item_id, {}).get("rarity")
+                    or items_info.get(item_id, {}).get("rarity")  # 使用items_info
+                    or "普通"
+                ),
+            }
+            for item_id, count in inventory.items()
+        ]
+
+        template_data["materialSlots"] = [None, None, None, None]  # 4个材料槽位
+
+        # 计算统计信息
+        total_crafts = workshop.get("synthesis_count", 0)
+        successful_crafts = workshop.get("success_count", 0)
+        success_rate = (
+            round((successful_crafts / total_crafts * 100)) if total_crafts > 0 else 0
+        )
+
+        template_data["stats"] = {
+            "totalCrafts": total_crafts,
+            "successfulCrafts": successful_crafts,
+            "successRate": success_rate,
+        }
+
+        return template_data
+
+    def get_rarity_emoji(self, rarity: str) -> str:
+        """获取稀有度图标"""
+        emoji_map = {
+            "普通": "⚪",
+            "稀有": "🔵",
+            "史诗": "🟣",
+            "传说": "🟠",
+            "神话": "🔴",
+        }
+        return emoji_map.get(rarity, "⚪")
+
+    async def get_user_workshop(
+        self, user_id: str, group_id: str = ""
+    ) -> Dict[str, Any]:
+        """获取用户工坊数据"""
+        user_data = await self.user.get_user_data(user_id, group_id)
+        return user_data.get(
+            "workshop",
+            {
+                "level": 1,  # 默认1级
+                "exp": 0,  # 默认0经验
+                "synthesis_count": 0,  # 默认合成次数
+                "success_count": 0,  # 默认成功次数
+            },
+        )
+
+    async def get_user_inventory(
+        self, user_id: str, group_id: str = ""
+    ) -> Dict[str, int]:
+        """获取用户背包 返回格式：{"道具ID": 数量, ...}"""
+        user_data = await self.user.get_user_data(user_id, group_id)
+        return user_data.get("inventory", {})
