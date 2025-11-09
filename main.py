@@ -16,6 +16,7 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
 from .core.battle import Battle
 from .core.lottery import Lottery
 from .core.shop import Shop
+from .core.synthesis import Synthesis
 from .core.task import Task
 from .core.user import User
 from .utils.utils import get_cmd_info, logo_AATP
@@ -47,6 +48,8 @@ class AkashaTerminal(Star):
             self.task = Task()
             # 商店系统
             self.shop = Shop()
+            # 合成系统
+            self.synthesis = Synthesis()
             # 抽奖系统
             self.lottery = Lottery(self.config)
             # 战斗系统
