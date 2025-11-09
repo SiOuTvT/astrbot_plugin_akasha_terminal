@@ -247,7 +247,7 @@ class AkashaTerminal(Star):
 
     ########## 合成系统
     @filter.command("合成列表", alias={"查看合成", "合成配方"})
-    async def composite_list(self, event: AiocqhttpMessageEvent, *args, **kwargs):
+    async def composite_list(self, event: AiocqhttpMessageEvent):
         """展示合成列表"""
         message = await self.synthesis.show_composite_list()
         yield event.plain_result(message)
