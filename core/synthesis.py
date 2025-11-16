@@ -191,6 +191,11 @@ class Synthesis:
         recipes = await self.load_json_data(self.synthesis_recipes_path, {})
         return recipes
 
+    async def get_shop_data(self) -> Dict[str, Any]:
+        """获取商店数据"""
+        shop_data = await self.load_json_data(self.shop_data_path, {})
+        return shop_data
+
     async def get_user_workshop(self, user_id: str, group_id: str) -> Dict[str, Any]:
         """获取用户工坊数据"""
         file_path = self.user_workshop_path / f"{user_id}_{group_id}.json"
@@ -211,6 +216,122 @@ class Synthesis:
     async def get_user_backpack(self, user_id: str, group_id: str) -> Dict[str, int]:
         """获取用户背包物品列表"""
         return await self.get_user_inventory(user_id, group_id)
+
+    async def show_composite_list(self, event: AiocqhttpMessageEvent) -> str:
+        """
+        显示合成列表
+        :param event: 消息事件对象
+        :return: 合成列表消息
+        """
+        try:
+            user_id = event.user_id
+            group_id = event.group_id
+            command_name = "合成列表"
+
+            logger.info(f"执行命令: {command_name}, 用户: {user_id}, 群组: {group_id}")
+
+            # 加载数据
+            recipes = await self.get_synthesis_recipes()
+            shop_data = await self.get_shop_data()
+            workshop = await self.get_user_workshop(user_id, group_id)
+            inventory = await self.get_user_inventory(user_id, group_id)
+
+            if not recipes.get("recipes"):
+                return "暂无合成配方可用"
+
+            # 构建消息
+            message_parts = ["🛠️ 合成列表 🛠️", "=" * 30]
+
+            for recipe_name, recipe_data in recipes["recipes"].items():
+                # 检查工坊等级
+                required_level = recipe_data.get("workshop_level", 1)
+                user_level = workshop.get("level", 1)
+                level_ok = user_level >= required_level
+
+                # 检查材料
+                materials_ok = True
+                materials_text = []
+                missing_materials = []
+
+                materials = recipe_data.get("materials", {})
+                for item_id, need_count in materials.items():
+                    have_count = inventory.get(item_id, 0)
+                    # 获取材料名称
+                    material_name = (
+                        shop_data.get("items", {})
+                        .get(item_id, {})
+                        .get("name", f"道具{item_id}")
+                    )
+
+                    if have_count >= need_count:
+                        materials_text.append(f"{material_name}×{need_count}")
+                    else:
+                        materials_ok = False
+                        missing_materials.append(
+                            f"{material_name}×{need_count}(拥有:{have_count})"
+                        )
+
+                # 状态标识
+                if not level_ok:
+                    status = "🔒 等级不足"
+                elif not materials_ok:
+                    status = "❌ 材料不足"
+                else:
+                    status = "✅ 可合成"
+
+                # 配方信息
+                recipe_info = f"【{recipe_name}】- {status}"
+                recipe_info += f"\n  📊 成功率: {recipe_data.get('success_rate', 50)}%"
+                recipe_info += f"\n  🎯 需要工坊等级: {required_level}"
+
+                # 产物信息
+                result_id = recipe_data.get("result_id")
+                if result_id:
+                    result_item = recipes.get("items", {}).get(result_id, {})
+                    result_name = result_item.get("name", result_id)
+                    rarity = result_item.get("rarity", "普通")
+                    rarity_emoji = await self.get_synthesis_rarity_emoji(rarity)
+                    recipe_info += f"\n  🎁 产物: {rarity_emoji}{result_name}"
+
+                # 材料信息
+                if materials_text:
+                    recipe_info += f"\n  🧪 材料: {', '.join(materials_text)}"
+
+                # 缺少材料信息
+                if missing_materials:
+                    recipe_info += f"\n  ❗ 缺少: {', '.join(missing_materials)}"
+
+                # 描述信息
+                description = recipe_data.get("description")
+                if description:
+                    recipe_info += f"\n  📝 效果: {description}"
+
+                message_parts.append(recipe_info)
+                message_parts.append("-" * 25)
+
+            # 添加工坊信息
+            message_parts.append("\n🏭 工坊信息:")
+            message_parts.append(f"  等级: Lv.{workshop.get('level', 1)}")
+            message_parts.append(
+                f"  经验: {workshop.get('exp', 0)}/{workshop.get('level', 1) * 100}"
+            )
+            message_parts.append(f"  总合成: {workshop.get('synthesis_count', 0)}次")
+            message_parts.append(f"  成功率: {workshop.get('success_count', 0)}次")
+
+            if workshop.get("synthesis_count", 0) > 0:
+                success_rate = (
+                    workshop.get("success_count", 0)
+                    / workshop.get("synthesis_count", 0)
+                ) * 100
+                message_parts.append(f"  历史成功率: {success_rate:.1f}%")
+
+            message_parts.append("\n💡 使用: #虚空合成 [道具名]")
+
+            return "\n".join(message_parts)
+
+        except Exception as e:
+            logger.error(f"显示合成列表失败: {e}")
+            return "获取合成列表失败，请稍后再试"
 
     async def handle_synthesis_command(
         self, event: AiocqhttpMessageEvent, parts: list[str]
