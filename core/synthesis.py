@@ -193,11 +193,6 @@ class Synthesis:
         recipes = await self.load_json_data(self.synthesis_recipes_path, {})
         return recipes
 
-    async def get_shop_data(self) -> Dict[str, Any]:
-        """获取商店数据"""
-        shop_data = await self.load_json_data(self.shop_data_path, {})
-        return shop_data
-
     async def get_user_workshop(self, user_id: str, group_id: str) -> Dict[str, Any]:
         """获取用户工坊数据"""
         file_path = self.user_workshop_path / f"{user_id}_{group_id}.json"
