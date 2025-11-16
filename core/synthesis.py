@@ -14,7 +14,6 @@ from astrbot.api.star import StarTools
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
 )
-from astrbot.core.quest.quest_system import QuestSystem
 
 from ..utils.text_formatter import TextFormatter
 from ..utils.utils import (
@@ -42,7 +41,6 @@ class Synthesis:
             / "astrbot_plugin_akasha_terminal_config.json"
         )
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.quest_system = QuestSystem()
         self._init_synthesis_data()
 
         # 导入商店系统获取材料名称
@@ -378,17 +376,8 @@ class Synthesis:
 
                 await self.save_user_workshop(user_id, group_id, workshop)
 
-                # 更新任务进度
-                quest_system = QuestSystem()
-                await quest_system.update_quest_progress(
-                    user_id, group_id, "synthesis_count", 1, True
-                )
-                await quest_system.update_quest_progress(
-                    user_id, group_id, "synthesis_success", 1, True
-                )
-                await quest_system.update_quest_progress(
-                    user_id, group_id, "interaction_count", 1, True
-                )
+                # 注释了任务更新进度
+
                 # 获取稀有度信息
                 recipes_data = await self.get_synthesis_recipes()
                 rarity = (
