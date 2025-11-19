@@ -35,6 +35,8 @@ class Synthesis:
         self.shop_data_path = self.data_dir / "shop_data.json"
         self.user_workshop_path = PLUGIN_DATA_DIR / "user_workshop"
         self.user_inventory_path = PLUGIN_DATA_DIR / "user_inventory"
+        # 内存缓存（用于 Redis 不可用时的冷却等短期存储）
+        self.memory_cache = {}
         self.config_path = (
             PLUGIN_DATA_DIR.parent.parent
             / "config"
@@ -185,6 +187,9 @@ class Synthesis:
         # 初始化用户工坊路径，储存每个用户的工坊数据
         if not self.user_workshop_path.exists():
             self.user_workshop_path.mkdir(parents=True, exist_ok=True)
+        # 初始化用户库存路径
+        if not self.user_inventory_path.exists():
+            self.user_inventory_path.mkdir(parents=True, exist_ok=True)
 
     async def get_synthesis_recipes(self) -> Dict[str, Any]:
         """获取所有合成配方"""
@@ -216,122 +221,6 @@ class Synthesis:
     async def get_user_backpack(self, user_id: str, group_id: str) -> Dict[str, int]:
         """获取用户背包物品列表"""
         return await self.get_user_inventory(user_id, group_id)
-
-    async def show_composite_list(self, event: AiocqhttpMessageEvent) -> str:
-        """
-        显示合成列表
-        :param event: 消息事件对象
-        :return: 合成列表消息
-        """
-        try:
-            user_id = event.user_id
-            group_id = event.group_id
-            command_name = "合成列表"
-
-            logger.info(f"执行命令: {command_name}, 用户: {user_id}, 群组: {group_id}")
-
-            # 加载数据
-            recipes = await self.get_synthesis_recipes()
-            shop_data = await self.get_shop_data()
-            workshop = await self.get_user_workshop(user_id, group_id)
-            inventory = await self.get_user_inventory(user_id, group_id)
-
-            if not recipes.get("recipes"):
-                return "暂无合成配方可用"
-
-            # 构建消息
-            message_parts = ["🛠️ 合成列表 🛠️", "=" * 30]
-
-            for recipe_name, recipe_data in recipes["recipes"].items():
-                # 检查工坊等级
-                required_level = recipe_data.get("workshop_level", 1)
-                user_level = workshop.get("level", 1)
-                level_ok = user_level >= required_level
-
-                # 检查材料
-                materials_ok = True
-                materials_text = []
-                missing_materials = []
-
-                materials = recipe_data.get("materials", {})
-                for item_id, need_count in materials.items():
-                    have_count = inventory.get(item_id, 0)
-                    # 获取材料名称
-                    material_name = (
-                        shop_data.get("items", {})
-                        .get(item_id, {})
-                        .get("name", f"道具{item_id}")
-                    )
-
-                    if have_count >= need_count:
-                        materials_text.append(f"{material_name}×{need_count}")
-                    else:
-                        materials_ok = False
-                        missing_materials.append(
-                            f"{material_name}×{need_count}(拥有:{have_count})"
-                        )
-
-                # 状态标识
-                if not level_ok:
-                    status = "🔒 等级不足"
-                elif not materials_ok:
-                    status = "❌ 材料不足"
-                else:
-                    status = "✅ 可合成"
-
-                # 配方信息
-                recipe_info = f"【{recipe_name}】- {status}"
-                recipe_info += f"\n  📊 成功率: {recipe_data.get('success_rate', 50)}%"
-                recipe_info += f"\n  🎯 需要工坊等级: {required_level}"
-
-                # 产物信息
-                result_id = recipe_data.get("result_id")
-                if result_id:
-                    result_item = recipes.get("items", {}).get(result_id, {})
-                    result_name = result_item.get("name", result_id)
-                    rarity = result_item.get("rarity", "普通")
-                    rarity_emoji = await self.get_synthesis_rarity_emoji(rarity)
-                    recipe_info += f"\n  🎁 产物: {rarity_emoji}{result_name}"
-
-                # 材料信息
-                if materials_text:
-                    recipe_info += f"\n  🧪 材料: {', '.join(materials_text)}"
-
-                # 缺少材料信息
-                if missing_materials:
-                    recipe_info += f"\n  ❗ 缺少: {', '.join(missing_materials)}"
-
-                # 描述信息
-                description = recipe_data.get("description")
-                if description:
-                    recipe_info += f"\n  📝 效果: {description}"
-
-                message_parts.append(recipe_info)
-                message_parts.append("-" * 25)
-
-            # 添加工坊信息
-            message_parts.append("\n🏭 工坊信息:")
-            message_parts.append(f"  等级: Lv.{workshop.get('level', 1)}")
-            message_parts.append(
-                f"  经验: {workshop.get('exp', 0)}/{workshop.get('level', 1) * 100}"
-            )
-            message_parts.append(f"  总合成: {workshop.get('synthesis_count', 0)}次")
-            message_parts.append(f"  成功率: {workshop.get('success_count', 0)}次")
-
-            if workshop.get("synthesis_count", 0) > 0:
-                success_rate = (
-                    workshop.get("success_count", 0)
-                    / workshop.get("synthesis_count", 0)
-                ) * 100
-                message_parts.append(f"  历史成功率: {success_rate:.1f}%")
-
-            message_parts.append("\n💡 使用: #虚空合成 [道具名]")
-
-            return "\n".join(message_parts)
-
-        except Exception as e:
-            logger.error(f"显示合成列表失败: {e}")
-            return "获取合成列表失败，请稍后再试"
 
     async def handle_synthesis_command(
         self, event: AiocqhttpMessageEvent, parts: list[str]
@@ -515,6 +404,10 @@ class Synthesis:
                 if level_up_message:
                     message += f"\n{level_up_message}"
 
+                return {"success": True, "message": message}
+
+            else:
+                # 合成失败逻辑
                 workshop["synthesis_count"] = workshop.get("synthesis_count", 0) + 1
                 await self.save_user_workshop(user_id, group_id, workshop)
 
@@ -529,3 +422,198 @@ class Synthesis:
         except Exception as e:
             logger.error(f"执行合成失败: {e}")
             return {"success": False, "message": "合成过程出现异常"}
+
+    # ------------------ 兼容封装与辅助方法 ------------------
+    async def load_json_data(self, file_path: Path, default: dict) -> dict:
+        """异步读取 JSON 数据，若不存在返回 default"""
+        try:
+            return await read_json(file_path) or default
+        except Exception:
+            return default
+
+    async def save_user_workshop(self, user_id: str, group_id: str, data: dict) -> bool:
+        file_path = self.user_workshop_path / f"{user_id}_{group_id}.json"
+        try:
+            await write_json(file_path, data)
+            return True
+        except Exception as e:
+            logger.error(f"保存工坊数据失败: {e}")
+            return False
+
+    async def save_user_inventory(
+        self, user_id: str, group_id: str, data: dict
+    ) -> bool:
+        file_path = self.user_inventory_path / f"{user_id}_{group_id}.json"
+        try:
+            await write_json(file_path, data)
+            return True
+        except Exception as e:
+            logger.error(f"保存背包数据失败: {e}")
+            return False
+
+    async def update_user_inventory(
+        self, user_id: str, group_id: str, item_id: str, delta: int
+    ) -> None:
+        inv = await self.get_user_inventory(user_id, group_id) or {}
+        cur = int(inv.get(item_id, 0))
+        new = cur + int(delta)
+        if new <= 0:
+            if item_id in inv:
+                inv.pop(item_id, None)
+        else:
+            inv[item_id] = new
+        await self.save_user_inventory(user_id, group_id, inv)
+
+    async def add_to_inventory(
+        self, user_id: str, group_id: str, item_id: str, count: int
+    ) -> None:
+        await self.update_user_inventory(user_id, group_id, item_id, count)
+
+    async def is_redis_available(self) -> bool:
+        """当前实现不依赖 Redis，保持向后兼容性"""
+        # 这里保守返回 False，除非插件实例显式注入 redis 属性
+        return hasattr(self, "redis") and self.redis is not None
+
+    async def set_synthesis_cooldown(
+        self, cooldown_key: str, seconds: int = 300
+    ) -> None:
+        # 尝试使用 redis，否则使用内存缓存
+        try:
+            if await self.is_redis_available():
+                await self.redis.setex(cooldown_key, seconds, 1)
+                return
+        except Exception:
+            pass
+
+        if not hasattr(self, "memory_cache"):
+            self.memory_cache = {}
+        self.memory_cache[cooldown_key] = int(time.time())
+
+    async def get_synthesis_rarity_emoji(self, rarity: str) -> str:
+        mapping = {
+            "普通": "🔹",
+            "稀有": "🔷",
+            "史诗": "🔶",
+            "传说": "🔸",
+            "神话": "💠",
+        }
+        return mapping.get(rarity, "🔹")
+
+    # ------------------ 对外兼容方法（供 main.py 调用） ------------------
+    async def show_composite_list(
+        self, event: AiocqhttpMessageEvent | None = None
+    ) -> str:
+        """返回合成配方的友好字符串列表"""
+        recipes = await self.get_synthesis_recipes()
+        recipes = recipes.get("recipes", {}) if isinstance(recipes, dict) else {}
+        if not recipes:
+            return "当前暂无合成配方。"
+        lines = ["合成配方列表："]
+        for name, info in recipes.items():
+            lvl = info.get("workshop_level", 1)
+            rate = info.get("success_rate", 50)
+            desc = info.get("description", "")
+            lines.append(f"• {name} - 需求工坊等级: {lvl} 成功率: {rate}% {desc}")
+        return "\n".join(lines)
+
+    async def handle_composite_command(
+        self, event: AiocqhttpMessageEvent, input_str: str
+    ) -> tuple[bool, str]:
+        """兼容 main.py 的 /合成 调用：将输入拆分为 parts 并调用底层处理器"""
+        parts = input_str.strip().split()
+        return await self.handle_synthesis_command(event, parts)
+
+    async def show_workshop(self, event: AiocqhttpMessageEvent) -> str:
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id()) if event.get_group_id() else "private"
+        workshop = await self.get_user_workshop(user_id, group_id) or {}
+        level = workshop.get("level", 1)
+        exp = workshop.get("exp", 0)
+        synthesis_count = workshop.get("synthesis_count", 0)
+        success_count = workshop.get("success_count", 0)
+        lines = [
+            f"工坊等级: {level}",
+            f"经验: {exp}",
+            f"合成次数: {synthesis_count}",
+            f"成功次数: {success_count}",
+        ]
+        return "\n".join(lines)
+
+    async def upgrade_workshop(self, event: AiocqhttpMessageEvent) -> str:
+        """简单的工坊升级：直接增加一级并保存（未校验资源）"""
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id()) if event.get_group_id() else "private"
+        workshop = await self.get_user_workshop(user_id, group_id) or {}
+        workshop["level"] = workshop.get("level", 1) + 1
+        workshop["exp"] = 0
+        await self.save_user_workshop(user_id, group_id, workshop)
+        return f"🎉 工坊已升级到 {workshop['level']} 级（提示：此操作未验证消耗，生产环境请补充校验）。"
+
+    async def handle_batch_composite_command(
+        self, event: AiocqhttpMessageEvent, input_str: str
+    ) -> tuple[bool, str]:
+        """批量合成兼容方法：当前仅支持单次合成，批量会提示暂不支持。"""
+        parts = input_str.strip().split()
+        if not parts:
+            return False, "请指定要合成的道具名称，使用方法: /批量合成 物品名称 数量"
+        # 如果用户传入数量，则简单拒绝以免触发冷却或复杂流程
+        if len(parts) >= 2:
+            try:
+                count = int(parts[-1])
+                if count > 1:
+                    return (
+                        False,
+                        "批量合成功能暂不可用（请先单次合成）。如需此功能，可提交 issue 请求实现。",
+                    )
+            except Exception:
+                pass
+        return await self.handle_synthesis_command(event, [parts[0]])
+
+    async def handle_prop_decomposition_command(
+        self, event: AiocqhttpMessageEvent, input_str: str
+    ) -> tuple[bool, str]:
+        """实现一个基础的道具分解：将物品按配表分解为材料（只处理数量为1的分解）。"""
+        name = input_str.strip()
+        if not name:
+            return False, "请指定要分解的道具名称，使用方法: /道具分解 物品名称"
+        # 查找 items 中的 id
+        recipes = await self.get_synthesis_recipes()
+        items = recipes.get("items", {})
+        item_id = None
+        for k, v in items.items():
+            if v.get("name") == name or k == name:
+                item_id = k
+                break
+        if not item_id:
+            return False, f"找不到道具：{name}"
+        decompose_map = recipes.get("decompose", {})
+        if item_id not in decompose_map:
+            return False, "该道具无法分解或未配置分解配方。"
+
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id()) if event.get_group_id() else "private"
+        inventory = await self.get_user_inventory(user_id, group_id)
+        if inventory.get(item_id, 0) <= 0:
+            return False, "背包中没有该道具，无法分解。"
+
+        materials = decompose_map[item_id].get("materials", {})
+        # 扣除物品
+        await self.update_user_inventory(user_id, group_id, item_id, -1)
+        # 添加材料
+        for mid, cnt in materials.items():
+            await self.add_to_inventory(user_id, group_id, mid, int(cnt))
+
+        return True, f"✅ 成功分解{name}，获得材料：{materials}"
+
+    async def show_composite_history(self, event: AiocqhttpMessageEvent) -> str:
+        user_id = str(event.get_sender_id())
+        group_id = str(event.get_group_id()) if event.get_group_id() else "private"
+        workshop = await self.get_user_workshop(user_id, group_id) or {}
+        synthesis_count = workshop.get("synthesis_count", 0)
+        success_count = workshop.get("success_count", 0)
+        lines = [
+            "合成历史：",
+            f"总合成次数: {synthesis_count}",
+            f"成功次数: {success_count}",
+        ]
+        return "\n".join(lines)
