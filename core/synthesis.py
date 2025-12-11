@@ -232,16 +232,8 @@ class Synthesis:
         :return: (是否成功, 结果消息)
         """
         try:
-            user_id = (
-                str(event.get_sender_id())
-                if hasattr(event, "user_id")
-                else str(event.user_id())
-            )
-            group_id = (
-                str(event.get_group_id())
-                if hasattr(event, "group_id") and event.group_id
-                else "private"
-            )
+            user_id = str(event.get_sender_id())
+            group_id = str(event.get_group_id()) if event.get_group_id() else "private"
             if not parts:
                 return (
                     False,
@@ -477,7 +469,6 @@ class Synthesis:
     async def set_synthesis_cooldown(
         self, cooldown_key: str, seconds: int = 300
     ) -> None:
-        # 尝试使用 redis，否则使用内存缓存
         try:
             if await self.is_redis_available():
                 await self.redis.setex(cooldown_key, seconds, 1)
@@ -499,7 +490,6 @@ class Synthesis:
         }
         return mapping.get(rarity, "🔹")
 
-    # ------------------ 对外兼容方法（供 main.py 调用） ------------------
     async def show_composite_list(
         self, event: AiocqhttpMessageEvent | None = None
     ) -> str:
@@ -519,7 +509,7 @@ class Synthesis:
     async def handle_composite_command(
         self, event: AiocqhttpMessageEvent, input_str: str
     ) -> tuple[bool, str]:
-        """兼容 main.py 的 /合成 调用：将输入拆分为 parts 并调用底层处理器"""
+        """/合成"""
         parts = input_str.strip().split()
         return await self.handle_synthesis_command(event, parts)
 
